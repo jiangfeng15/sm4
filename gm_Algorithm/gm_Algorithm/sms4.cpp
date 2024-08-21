@@ -85,6 +85,9 @@ int init_sm4_context(SM4_CONTEXT *key_obj, UCHAR *key, UCHAR mode, UCHAR padding
 			key_obj->sm_key.MK[i] += ((ULONG)key[i * 4 + 3]);
 		}
 		init_sm4_rk(&key_obj->sm_key);
+
+		key_obj->mode = mode;
+		key_obj->padding_type = padding_type;
 	}
 	else
 		return 1;
@@ -190,4 +193,161 @@ void run_sm4F_once(SM4_CONTEXT *key_obj, UCHAR flag, UCHAR *input, UCHAR * outpu
 	put_big_endian(ulbuf[33], output, 8);
 	put_big_endian(ulbuf[32], output, 12);
 
+}
+
+int sm4_ecb(SM4_CONTEXT *key_obj, UCHAR flag, UCHAR *input, int in_len, UCHAR * output, int &out_len) {
+
+	key_obj->left_size = (in_len % 16 == 0) ? 0 : (16 - in_len % 16);
+	if (key_obj->left_size != 0 && out_len < in_len) {
+		if(flag == SM4_ENCRYPT) //加密过程，要求输出密文长度out_len >= in_len，而且out_len是16的整数倍
+			return 1;
+	}
+	UCHAR * new_buf = NULL;
+	int new_size = in_len;
+	bool padding_flag = false;  //记录是否padding
+	if (key_obj->left_size != 0) {
+		//重新分配内存空间
+		new_size = in_len + key_obj->left_size;
+		new_buf = new UCHAR[new_size];
+		memset(new_buf, 0x00, new_size);
+		memcpy(new_buf, input, in_len);
+
+		if (key_obj->padding_type == 1) { //pcks5填充
+			int padding_value = key_obj->left_size;
+			for (auto i = in_len; i < new_size; i++) {
+				new_buf[i] = padding_value;
+			}
+		}
+		padding_flag = true;
+	}
+	//保存临时结果
+	UCHAR tmp[16] = { 0x00 };
+	auto round = new_size / 16;
+	while (new_size > 0) {
+		if (padding_flag && new_buf) {
+			run_sm4F_once(key_obj, flag, new_buf, tmp);
+			new_buf = new_buf + 16;
+
+			if (round == 1) {  //最后block
+				if (flag == SM4_DECRYPT && check_pkcs5_padding(tmp)) { //加密明文做了padding,解密时明文去除padding
+					memcpy(output, tmp, 16 - key_obj->left_size);
+				}
+				else
+					return 2;
+			}
+			else
+				memcpy(output, tmp, 16);
+			memset(tmp, 0x00, 16);
+		}
+		else { //没有padding
+			run_sm4F_once(key_obj, flag, input, output);
+			input = input + 16;
+			output = output + 16;
+		}
+		new_size = new_size - 16;
+
+		round -= 1;
+	}	
+	return 0;
+}
+
+int sm4_ecb_enc(SM4_CONTEXT *key_obj, UCHAR *input, int in_len, UCHAR * output, int &out_len) {
+	key_obj->left_size = in_len % 16; // (in_len % 16 == 0) ? 0 : (16 - in_len % 16);
+	if (key_obj->left_size != 0 && out_len < in_len) {
+		//加密过程，要求输出密文长度out_len >= in_len，而且out_len是16的整数倍
+		return 1;
+	}
+	int new_size = in_len;
+	bool padding_flag = false;  //记录是否padding
+
+	//////////////////////////////////////
+	//拷贝最后一组不足16字节的数组，填充pkcs5
+	if (key_obj->left_size != 0) {
+		memset(key_obj->left, 0x00, sizeof(key_obj->left));
+		memcpy(key_obj->left, input + (in_len - key_obj->left_size), key_obj->left_size);
+
+		if (key_obj->padding_type == 1) { //pcks5填充
+			int padding_value = 16 - key_obj->left_size;
+			for (auto i = key_obj->left_size; i < 16; i++) {
+				key_obj->left[i] = padding_value;
+			}
+		}
+		padding_flag = true;
+		new_size = in_len + 16 - key_obj->left_size;
+	}
+	///////////////////////////////////////////////////////////////////////
+	//保存临时结果
+	UCHAR tmp[16] = { 0x00 };
+	auto round = new_size / 16;
+	bool first_round = true;
+	while (round > 0) {
+
+		if (!first_round && padding_flag && round == 1) {  //最后block
+			run_sm4F_once(key_obj, SM4_ENCRYPT, key_obj->left, tmp);
+			memcpy(output, tmp, 16);
+		}
+		else{
+			run_sm4F_once(key_obj, SM4_ENCRYPT, input, output);
+			input = input + 16;
+			output = output + 16;
+			first_round = false;
+		}
+		round -= 1;
+	}
+	out_len = new_size;
+	return 0;
+}
+
+int sm4_ecb_dec(SM4_CONTEXT *key_obj, UCHAR *input, int in_len, UCHAR * output, int &out_len) {
+
+	if ((in_len % 16 != 0) && out_len < in_len) {
+		//加密过程，要求输出密文长度out_len >= in_len，而且out_len是16的整数倍
+		return 1;
+	}
+	UCHAR * new_buf = NULL;
+	int new_size = in_len;
+	bool padding_flag = false;  //记录是否padding
+
+	//保存临时结果
+	UCHAR tmp[16] = { 0x00 };
+	auto round = in_len / 16;
+	int real_out_len = 0;
+	bool first_round = true;
+	while (round > 0) {
+
+		if (!first_round && round == 1) {  //最后block
+			run_sm4F_once(key_obj, SM4_DECRYPT, input, tmp);
+			if (check_pkcs5_padding(tmp)) {
+				memcpy(output, tmp, 16 - tmp[15]);
+				real_out_len += 16 - tmp[15];
+			}
+			else {
+				memcpy(output, tmp, 16);
+				real_out_len += 16;
+			}			
+		}
+		else {
+			run_sm4F_once(key_obj, SM4_DECRYPT, input, output);
+			input = input + 16;
+			output = output + 16;
+			real_out_len += 16;
+			first_round = false;
+		}
+		round -= 1;
+	}
+	out_len = real_out_len;
+	return 0;
+}
+
+bool check_pkcs5_padding(UCHAR * output, int out_len) {
+	auto padding_value = output[out_len - 1];
+	if (padding_value > 16)
+		return false;
+	bool pkcs5_flag = true;
+	for (auto i = 0; i < padding_value; i++) {
+		if (padding_value != output[out_len - i - 1]) {
+			pkcs5_flag = false;
+		}
+	}
+	return pkcs5_flag;
 }

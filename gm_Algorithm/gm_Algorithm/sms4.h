@@ -35,6 +35,9 @@ typedef unsigned char unchar;
 #define SM4_ENCRYPT     0
 #define SM4_DECRYPT     1
 
+#define SM4_ECB			0
+#define SM4_CBC			1
+
 typedef struct sm4_key
 {
 	ULONG ERK[32];  /*rk for encrypt*/
@@ -49,7 +52,7 @@ typedef struct sm4_context {
 	UCHAR iv[16]; //CBC use
 	UCHAR left[16]; //last left data
 	UCHAR flag; //1: can decrypt
-	UCHAR left_size; //size of left
+	UCHAR left_size; //size of left  需要填充字节
 	UCHAR padding_type; //0: padding 0 or not padding, 1: PKCS5 padding
 
 }SM4_CONTEXT;
@@ -64,11 +67,33 @@ static ULONG SM4Lt(ULONG a);
 static ULONG SM4F(ULONG x0, ULONG x1, ULONG x2, ULONG x3, ULONG rk);
 
 /*
-* brief 执行一次F轮函数
+* brief 执行一次F轮函数,input和output 都是16字节
 *  param key_obj to be initialized
 *  param flag  SM4_ENCRYPT or SM4_DECRYPT
-*  param input  in 
-*  param output out
+*  param input  in  16bytes
+*  param output out 16bytes
 */
 
 void run_sm4F_once(SM4_CONTEXT *key_obj, UCHAR flag, UCHAR *input, UCHAR * output);
+
+/*
+* brief 执行sm4 支持pading模式，1 pcks5
+*  param key_obj to be initialized
+*  param flag  SM4_ENCRYPT or SM4_DECRYPT
+*  param input  in 输入buffer
+*  param in_len in 输入字节
+*  param output in 输出buffer
+*  param out_len in 输出buffer字节数，out 输出buffer实际存储字节数
+*/
+int sm4_ecb(SM4_CONTEXT *key_obj, UCHAR flag, UCHAR *input, int in_len, UCHAR * output, int &out_len);
+
+int sm4_ecb_enc(SM4_CONTEXT *key_obj, UCHAR *input, int in_len, UCHAR * output, int &out_len);
+
+int sm4_ecb_dec(SM4_CONTEXT *key_obj, UCHAR *input, int in_len, UCHAR * output, int &out_len);
+
+/*
+* brief 验证是否满足pkcs#5/7
+* param output in 
+* out_len in 长度默认 16字节
+*/
+bool check_pkcs5_padding(UCHAR * output,int out_len=16);
